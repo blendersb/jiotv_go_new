@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"strings"
 
-	"github.com/valyala/fasthttp"
 	"gopkg.in/yaml.v3"
 
 	"github.com/jiotv-go/jiotv_go/v3/internal/config"
@@ -83,7 +85,7 @@ func New(credentials *utils.JIOTV_CREDENTIALS) *Television {
 		"versionCode":     headers.VersionCode389,
 	}
 
-	// Create a fasthttp.Client
+	// Create an HTTP client using the singleton instance
 	client := utils.GetRequestClient()
 
 	// Return a new Television instance
@@ -146,38 +148,33 @@ func (tv *Television) Live(channelID string) (*LiveURLOutput, error) {
 		return getSLChannel(channelID)
 	}
 
-	formData := fasthttp.AcquireArgs()
-	defer fasthttp.ReleaseArgs(formData)
-
+	// Prepare form data
+	formData := url.Values{}
 	formData.Add("channel_id", channelID)
 	formData.Add("stream_type", "Seek")
 	formData.Add("begin", utils.GenerateCurrentTime())
 	formData.Add("srno", utils.GenerateDate())
 
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
+	// Always use the v1.1 API endpoint
+	apiURL := "https://" + JIOTV_API_DOMAIN + urls.PlaybackAPIPath
+
+	req, err := http.NewRequest("POST", apiURL, strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil, err
+	}
 
 	// Copy headers from the Television headers map to the request
 	for key, value := range tv.Headers {
 		req.Header.Set(key, value)
 	}
 
-	// Always use the v1.1 API endpoint
-	url := "https://" + JIOTV_API_DOMAIN + urls.PlaybackAPIPath
 	req.Header.Set(headers.AccessToken, tv.AccessToken)
-	req.SetRequestURI(url)
-	req.Header.SetMethod("POST")
-
-	// Encode the form data and set it as the request body
-	req.SetBody(formData.QueryString())
-
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("channel_id", channelID)
 
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
-
 	// Perform the HTTP POST request
-	if err := tv.Client.Do(req, resp); err != nil {
+	resp, err := tv.Client.Do(req)
+	if err != nil {
 		if strings.Contains(err.Error(), "server closed connection before returning the first response byte") {
 			utils.Log.Println("Retrying the request...")
 			return tv.Live(channelID)
@@ -185,20 +182,28 @@ func (tv *Television) Live(channelID string) (*LiveURLOutput, error) {
 		utils.Log.Panic(err)
 		return nil, err
 	}
-	if resp.StatusCode() != fasthttp.StatusOK {
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
 		// Store the response body as a string
-		response := string(resp.Body())
+		body, _ := io.ReadAll(resp.Body)
+		response := string(body)
 
 		// Log headers and request data
-		utils.Log.Println("Request headers:", req.Header.String())
-		utils.Log.Println("Request data:", formData.String())
+		utils.Log.Println("Request headers:", req.Header)
+		utils.Log.Println("Request data:", formData.Encode())
 		utils.Log.Panicln("Response: ", response)
 
-		return nil, fmt.Errorf("Request failed with status code: %d\nresponse: %s", resp.StatusCode(), response)
+		return nil, fmt.Errorf("Request failed with status code: %d\nresponse: %s", resp.StatusCode, response)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
 	}
 
 	var result LiveURLOutput
-	if err := json.Unmarshal(resp.Body(), &result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		utils.Log.Panic(err)
 		return nil, err
 	}
@@ -208,28 +213,32 @@ func (tv *Television) Live(channelID string) (*LiveURLOutput, error) {
 
 // Render method does HTTP GET request to the provided URL and return the response body
 func (tv *Television) Render(url string) ([]byte, int) {
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
-
-	req.SetRequestURI(url)
-	req.Header.SetMethod("GET")
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		utils.Log.Panic(err)
+		return nil, 0
+	}
 
 	// Copy headers from the Television headers map to the request
 	for key, value := range tv.Headers {
 		req.Header.Set(key, value)
 	}
 
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
-
 	// Perform the HTTP GET request
-	if err := tv.Client.Do(req, resp); err != nil {
+	resp, err := tv.Client.Do(req)
+	if err != nil {
 		utils.Log.Panic(err)
+		return nil, 0
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		utils.Log.Panic(err)
+		return nil, 0
 	}
 
-	buf := resp.Body()
-
-	return buf, resp.StatusCode()
+	return body, resp.StatusCode
 }
 
 // detectAndParseFormat attempts to detect the format of custom channels data and parse it
@@ -339,7 +348,7 @@ func getCustomChannels() []Channel {
 
 // Channels fetch channels from JioTV API and merge with custom channels
 func Channels() (ChannelsResponse, error) {
-	// Create a fasthttp.Client
+	// Create an HTTP client
 	client := utils.GetRequestClient()
 
 	// Set up request headers
@@ -363,7 +372,7 @@ func Channels() (ChannelsResponse, error) {
 		utils.Log.Printf("Error fetching channels from JioTV API: %v", err)
 		return ChannelsResponse{}, err
 	}
-	defer fasthttp.ReleaseResponse(resp)
+	defer resp.Body.Close()
 
 	var apiResponse ChannelsResponse
 
@@ -536,28 +545,30 @@ func getSLChannel(channelID string) (*LiveURLOutput, error) {
 
 		channel_url := string(chu)
 
-		// Make a get request to the channel url and store location header in actual_url
-		req := fasthttp.AcquireRequest()
-		defer fasthttp.ReleaseRequest(req)
-
-		req.SetRequestURI(channel_url)
-		req.Header.SetMethod("GET")
-
-		resp := fasthttp.AcquireResponse()
-		defer fasthttp.ReleaseResponse(resp)
-
-		// Perform the HTTP GET request
-		if err := utils.GetRequestClient().Do(req, resp); err != nil {
+		// Make a GET request to the channel url and store location header in actual_url
+		req, err := http.NewRequest("GET", channel_url, nil)
+		if err != nil {
 			utils.Log.Panic(err)
+			return nil, err
 		}
 
-		if resp.StatusCode() != fasthttp.StatusFound {
-			utils.Log.Panicf("Request failed with status code: %d", resp.StatusCode())
-			utils.Log.Panicln("Response: ", string(resp.Body()))
+		// Perform the HTTP GET request
+		client := utils.GetRequestClient()
+		resp, err := client.Do(req)
+		if err != nil {
+			utils.Log.Panic(err)
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusFound {
+			body, _ := io.ReadAll(resp.Body)
+			utils.Log.Panicf("Request failed with status code: %d", resp.StatusCode)
+			utils.Log.Panicln("Response: ", string(body))
 		}
 
 		// Store the location header in actual_url
-		actual_url := string(resp.Header.Peek("Location"))
+		actual_url := resp.Header.Get("Location")
 
 		result.Result = actual_url
 		result.Bitrates.Auto = actual_url

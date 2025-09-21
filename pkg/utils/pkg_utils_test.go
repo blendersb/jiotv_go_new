@@ -2,22 +2,60 @@ package utils
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/jiotv-go/jiotv_go/v3/pkg/store"
-	"github.com/valyala/fasthttp"
 )
 
 func TestMakeHTTPRequest(t *testing.T) {
-	// Skip this test since fasthttp.NewInmemoryListener is not available in newer versions
-	t.Skip("Skipping test due to fasthttp version compatibility")
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("test response"))
+	}))
+	defer server.Close()
+
+	client := &http.Client{}
+	config := HTTPRequestConfig{
+		URL:    server.URL,
+		Method: "GET",
+	}
+
+	resp, err := MakeHTTPRequest(config, client)
+	if err != nil {
+		t.Fatalf("MakeHTTPRequest failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status code %d, got %d", http.StatusOK, resp.StatusCode)
+	}
 }
 
 func TestMakeJSONRequest(t *testing.T) {
-	// Skip this test since fasthttp.NewInmemoryListener is not available in newer versions
-	t.Skip("Skipping test due to fasthttp version compatibility")
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"message": "success"}`))
+	}))
+	defer server.Close()
+
+	client := &http.Client{}
+	payload := map[string]string{"test": "data"}
+
+	resp, err := MakeJSONRequest(server.URL, "POST", payload, nil, client)
+	if err != nil {
+		t.Fatalf("MakeJSONRequest failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status code %d, got %d", http.StatusOK, resp.StatusCode)
+	}
 }
 
 func TestExecuteBatchStoreOperations(t *testing.T) {
@@ -106,8 +144,10 @@ func TestCheckAndReadFile(t *testing.T) {
 }
 
 func TestSetCommonJioTVHeaders(t *testing.T) {
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
+	req, err := http.NewRequest("GET", "http://example.com", nil)
+	if err != nil {
+		t.Fatalf("Failed to create HTTP request: %v", err)
+	}
 
 	deviceID := "test-device"
 	crmID := "test-crm"
@@ -116,37 +156,44 @@ func TestSetCommonJioTVHeaders(t *testing.T) {
 	SetCommonJioTVHeaders(req, deviceID, crmID, uniqueID)
 
 	// Verify some key headers
-	if string(req.Header.Peek("deviceId")) != deviceID {
-		t.Errorf("Expected deviceId '%s', got '%s'", deviceID, req.Header.Peek("deviceId"))
+	if req.Header.Get("deviceId") != deviceID {
+		t.Errorf("Expected deviceId '%s', got '%s'", deviceID, req.Header.Get("deviceId"))
 	}
 
-	if string(req.Header.Peek("crmid")) != crmID {
-		t.Errorf("Expected crmid '%s', got '%s'", crmID, req.Header.Peek("crmid"))
+	if req.Header.Get("crmid") != crmID {
+		t.Errorf("Expected crmid '%s', got '%s'", crmID, req.Header.Get("crmid"))
 	}
 
-	if string(req.Header.Peek("uniqueId")) != uniqueID {
-		t.Errorf("Expected uniqueId '%s', got '%s'", uniqueID, req.Header.Peek("uniqueId"))
+	if req.Header.Get("uniqueId") != uniqueID {
+		t.Errorf("Expected uniqueId '%s', got '%s'", uniqueID, req.Header.Get("uniqueId"))
 	}
 
-	if string(req.Header.Peek("appkey")) != "NzNiMDhlYzQyNjJm" {
+	if req.Header.Get("appkey") != "NzNiMDhlYzQyNjJm" {
 		t.Error("Expected appkey to be set")
 	}
 }
 
 func TestParseJSONResponse(t *testing.T) {
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
+	// Create test server with OK response
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"name": "test", "value": 123}`))
+	}))
+	defer server.Close()
 
-	// Test successful response
-	resp.SetStatusCode(fasthttp.StatusOK)
-	resp.SetBodyString(`{"name": "test", "value": 123}`)
+	client := &http.Client{}
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	defer resp.Body.Close()
 
 	var target struct {
 		Name  string `json:"name"`
 		Value int    `json:"value"`
 	}
 
-	err := ParseJSONResponse(resp, &target)
+	err = ParseJSONResponse(resp, &target)
 	if err != nil {
 		t.Fatalf("ParseJSONResponse failed: %v", err)
 	}
@@ -160,8 +207,18 @@ func TestParseJSONResponse(t *testing.T) {
 	}
 
 	// Test error response
-	resp.SetStatusCode(fasthttp.StatusBadRequest)
-	err = ParseJSONResponse(resp, &target)
+	errorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer errorServer.Close()
+
+	errorResp, err := client.Get(errorServer.URL)
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	defer errorResp.Body.Close()
+
+	err = ParseJSONResponse(errorResp, &target)
 	if err == nil {
 		t.Error("Expected error for bad status code")
 	}

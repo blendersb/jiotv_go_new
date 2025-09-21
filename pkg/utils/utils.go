@@ -9,20 +9,22 @@ import (
 	"io" // Ensure io is imported
 	"log"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath" // Ensure path/filepath is imported
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"golang.org/x/net/proxy"
 	"gopkg.in/natefinch/lumberjack.v2"
 
 	"github.com/jiotv-go/jiotv_go/v3/internal/config"
 	"github.com/jiotv-go/jiotv_go/v3/internal/constants/headers"
 	"github.com/jiotv-go/jiotv_go/v3/internal/constants/urls"
 	"github.com/jiotv-go/jiotv_go/v3/pkg/store"
-	"github.com/valyala/fasthttp"
-	"github.com/valyala/fasthttp/fasthttpproxy"
 )
 
 const (
@@ -128,11 +130,12 @@ func LoginSendOTP(number string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer fasthttp.ReleaseResponse(resp)
+	defer resp.Body.Close()
 
 	// Check the response status code
-	if resp.StatusCode() != fasthttp.StatusNoContent {
-		return false, fmt.Errorf("request failed with status code: %d body: %s", resp.StatusCode(), resp.Body())
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("request failed with status code: %d body: %s", resp.StatusCode, string(body))
 	} else {
 		return true, nil
 	}
@@ -173,15 +176,20 @@ func LoginVerifyOTP(number, otp string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer fasthttp.ReleaseResponse(resp)
+	defer resp.Body.Close()
 
 	// Check the response status code
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, fmt.Errorf("request failed with status code: %d", resp.StatusCode())
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("request failed with status code: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	var result LoginResponse
-	if err := json.Unmarshal(resp.Body(), &result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, err
 	}
 
@@ -422,46 +430,77 @@ func PerformServerLogout() error {
 	if err != nil {
 		return LogAndReturnError(err, "HTTP request failed")
 	}
-	defer fasthttp.ReleaseResponse(resp)
+	defer resp.Body.Close()
 
 	// Log the response status code
-	Log.Printf("Server logout API response status code: %d", resp.StatusCode())
+	Log.Printf("Server logout API response status code: %d", resp.StatusCode)
 
-	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		Log.Println("Server-side logout successful.")
 		return nil
 	}
 
-	Log.Printf("Server-side logout failed with status code: %d, body: %s\n", resp.StatusCode(), string(resp.Body()))
-	return fmt.Errorf("server logout API request failed with status code: %d", resp.StatusCode())
+	body, _ := io.ReadAll(resp.Body)
+	Log.Printf("Server-side logout failed with status code: %d, body: %s\n", resp.StatusCode, string(body))
+	return fmt.Errorf("server logout API request failed with status code: %d", resp.StatusCode)
 }
 
-// GetRequestClient create a HTTP client with proxy if given
-// Otherwise create a HTTP client without proxy
-// Returns a fasthttp.Client
-func GetRequestClient() *fasthttp.Client {
-	// The function shall return a fasthttp.client with proxy if given
-	proxy := config.Cfg.Proxy
+var (
+	// Singleton HTTP client instance
+	httpClientInstance *http.Client
+	httpClientOnce     sync.Once
+)
 
-	if proxy != "" {
-		Log.Println("Using proxy: " + proxy)
-		// check if given proxy is socks5 or http
-		if strings.HasPrefix(proxy, "socks5://") {
-			// socks5 proxy
-			return &fasthttp.Client{
-				Dial: fasthttpproxy.FasthttpSocksDialerDualStack(proxy),
+// GetRequestClient creates and returns a singleton HTTP client with proxy support
+// Returns an http.Client configured with optional proxy settings
+func GetRequestClient() *http.Client {
+	httpClientOnce.Do(func() {
+		httpClientInstance = createHTTPClient()
+	})
+	return httpClientInstance
+}
+
+// createHTTPClient creates a new HTTP client with proxy if given
+// Otherwise creates a HTTP client without proxy
+func createHTTPClient() *http.Client {
+	proxyURL := config.Cfg.Proxy
+	
+	transport := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			DualStack: true,
+		}).DialContext,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
+	if proxyURL != "" {
+		Log.Println("Using proxy: " + proxyURL)
+		
+		if strings.HasPrefix(proxyURL, "socks5://") {
+			// SOCKS5 proxy
+			dialer, err := proxy.SOCKS5("tcp", strings.TrimPrefix(proxyURL, "socks5://"), nil, proxy.Direct)
+			if err != nil {
+				Log.Printf("Failed to create SOCKS5 proxy dialer: %v", err)
+			} else {
+				transport.Dial = dialer.Dial
 			}
 		} else {
-			// http proxy
-			return &fasthttp.Client{
-				Dial: fasthttpproxy.FasthttpHTTPDialerDualStackTimeout(proxy, 10*time.Second),
+			// HTTP proxy  
+			parsedURL, err := url.Parse(proxyURL)
+			if err != nil {
+				Log.Printf("Failed to parse proxy URL: %v", err)
+			} else {
+				transport.Proxy = http.ProxyURL(parsedURL)
 			}
 		}
 	}
-	return &fasthttp.Client{
-		Dial: fasthttp.DialFunc(func(addr string) (netConn net.Conn, err error) {
-			return fasthttp.DialDualStackTimeout(addr, 5*time.Second)
-		}),
+
+	return &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
 	}
 }
 

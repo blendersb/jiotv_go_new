@@ -365,7 +365,7 @@ func SLHandler(c *fiber.Ctx) error {
 	}
 	// Delete all browser headers
 	internalUtils.SetPlayerHeaders(c, PLAYER_USER_AGENT)
-	if err := proxy.Do(c, url, TV.Client); err != nil {
+	if err := proxy.Do(c, url); err != nil {
 		return err
 	}
 
@@ -402,7 +402,7 @@ func RenderKeyHandler(c *fiber.Ctx) error {
 	c.Request().Header.Set("ssotoken", TV.SsoToken)
 	c.Request().Header.Set("channelId", channel_id)
 	c.Request().Header.Set("User-Agent", PLAYER_USER_AGENT)
-	if err := proxy.Do(c, decoded_url, TV.Client); err != nil {
+	if err := proxy.Do(c, decoded_url); err != nil {
 		return err
 	}
 	c.Response().Header.Del(fiber.HeaderServer)

@@ -51,7 +51,7 @@ func WebEPGHandler(c *fiber.Ctx) error {
 	}
 
 	url := fmt.Sprintf(epg.EPG_URL, offset, channelIntID)
-	if err := proxy.Do(c, url, TV.Client); err != nil {
+	if err := proxy.Do(c, url); err != nil {
 		return err
 	}
 

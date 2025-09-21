@@ -3,13 +3,14 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/urfave/cli/v2"
-	"github.com/valyala/fasthttp"
 )
 
 // Update checks for a newer version of the application
@@ -104,26 +105,24 @@ func getLatestRelease(customVersion string) (*Release, error) {
 		url = fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", owner, repo)
 	}
 
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	// Make HTTP request
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-	req.SetRequestURI(url)
-	req.Header.SetMethod("GET")
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch latest release. Status code: %d", resp.StatusCode)
+	}
 
-	if err := fasthttp.Do(req, resp); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
 		return nil, err
 	}
 
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, fmt.Errorf("failed to fetch latest release. Status code: %d", resp.StatusCode())
-	}
-
-	body := resp.Body()
 	var release Release
-	err := json.Unmarshal(body, &release)
-	if err != nil {
+	if err = json.Unmarshal(body, &release); err != nil {
 		return nil, err
 	}
 
@@ -150,37 +149,26 @@ type Release struct {
 // It returns an error if the request fails or the status code is not 200 OK.
 // The saved binary file is made executable.
 func downloadBinary(url, outputPath string) error {
-	initialBufferSize := 8192
-	maxBufferSize := 32768
+	// Perform an HTTP GET request
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
 
-	// Iterate through buffer sizes, starting from initialBufferSize and doubling each time
-	for bufferSize := initialBufferSize; bufferSize <= maxBufferSize; bufferSize *= 2 {
-		client := &fasthttp.Client{
-			ReadBufferSize: bufferSize, // Set the read buffer size for the client
-		}
-
-		// Perform an HTTP GET request
-		statusCode, body, err := client.Get(nil, url)
-		if err != nil {
-			// Check if the error is due to a small read buffer and if we can increase the buffer size
-			if strings.Contains(err.Error(), "small read buffer") && bufferSize < maxBufferSize {
-				fmt.Println("Increasing buffer size and retrying download...")
-				continue // Retry with a larger buffer size
-			}
-			return err // Return the error if it's not related to buffer size or max buffer size is reached
-		}
-
-		if statusCode != fasthttp.StatusOK {
-			return fmt.Errorf("failed to download binary. Status code: %d", statusCode)
-		}
-
-		// Write the downloaded binary to the specified output path with executable permissions
-		// skipcq: GSC-G302 - We want executable permissions on the binary
-		return os.WriteFile(outputPath, body, 0744)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to download binary. Status code: %d", resp.StatusCode)
 	}
 
-	// Return an error if the binary could not be downloaded after increasing the buffer size
-	return fmt.Errorf("failed to download binary after increasing buffer size")
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	// Write the downloaded binary to the specified output path with executable permissions
+	// skipcq: GSC-G302 - We want executable permissions on the binary
+	return os.WriteFile(outputPath, body, 0744)
 }
 
 // replaceBinary replaces the current executable binary with a new binary.

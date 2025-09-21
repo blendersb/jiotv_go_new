@@ -2,13 +2,13 @@ package handlers
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/valyala/fasthttp"
 	"github.com/jiotv-go/jiotv_go/v3/internal/config"
 	"github.com/jiotv-go/jiotv_go/v3/pkg/television"
 )
@@ -16,10 +16,8 @@ import (
 // createMockFiberContext creates a mock Fiber context for testing
 func createMockFiberContext(method, path string) *fiber.Ctx {
 	app := fiber.New()
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod(method)
-	ctx.Request.SetRequestURI(path)
-	return app.AcquireCtx(ctx)
+	req := httptest.NewRequest(method, path, nil)
+	return app.AcquireCtx().(*fiber.Ctx)
 }
 
 func TestInit(t *testing.T) {

@@ -1,13 +1,15 @@
 package utils
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 
 	"github.com/jiotv-go/jiotv_go/v3/internal/constants/headers"
 	"github.com/jiotv-go/jiotv_go/v3/pkg/store"
-	"github.com/valyala/fasthttp"
 )
 
 // HTTPRequestConfig holds configuration for making HTTP requests
@@ -20,24 +22,28 @@ type HTTPRequestConfig struct {
 	ContentType string
 }
 
-// MakeHTTPRequest creates and executes a fasthttp request with common patterns
-func MakeHTTPRequest(config HTTPRequestConfig, client *fasthttp.Client) (*fasthttp.Response, error) {
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
+// MakeHTTPRequest creates and executes an HTTP request with common patterns
+func MakeHTTPRequest(config HTTPRequestConfig, client *http.Client) (*http.Response, error) {
+	var bodyReader io.Reader
+	if len(config.Body) > 0 {
+		bodyReader = bytes.NewReader(config.Body)
+	}
 
-	req.SetRequestURI(config.URL)
-	req.Header.SetMethod(config.Method)
+	req, err := http.NewRequest(config.Method, config.URL, bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+	}
 
 	// Set User-Agent
 	if config.UserAgent != "" {
-		req.Header.SetUserAgent(config.UserAgent)
+		req.Header.Set("User-Agent", config.UserAgent)
 	} else {
-		req.Header.SetUserAgent(headers.UserAgentOkHttp)
+		req.Header.Set("User-Agent", headers.UserAgentOkHttp)
 	}
 
 	// Set Content-Type
 	if config.ContentType != "" {
-		req.Header.SetContentType(config.ContentType)
+		req.Header.Set("Content-Type", config.ContentType)
 	}
 
 	// Set custom headers
@@ -45,16 +51,9 @@ func MakeHTTPRequest(config HTTPRequestConfig, client *fasthttp.Client) (*fastht
 		req.Header.Set(key, value)
 	}
 
-	// Set body if provided
-	if len(config.Body) > 0 {
-		req.SetBody(config.Body)
-	}
-
-	resp := fasthttp.AcquireResponse()
-	
 	// Perform the HTTP request
-	if err := client.Do(req, resp); err != nil {
-		fasthttp.ReleaseResponse(resp)
+	resp, err := client.Do(req)
+	if err != nil {
 		return nil, err
 	}
 
@@ -62,7 +61,7 @@ func MakeHTTPRequest(config HTTPRequestConfig, client *fasthttp.Client) (*fastht
 }
 
 // MakeJSONRequest is a convenience function for making JSON requests
-func MakeJSONRequest(url, method string, payload interface{}, requestHeaders map[string]string, client *fasthttp.Client) (*fasthttp.Response, error) {
+func MakeJSONRequest(url, method string, payload interface{}, requestHeaders map[string]string, client *http.Client) (*http.Response, error) {
 	var body []byte
 	var err error
 
@@ -140,7 +139,7 @@ func CheckAndReadFile(filePath string) FileOperationResult {
 }
 
 // SetCommonJioTVHeaders sets common headers used across JioTV API requests
-func SetCommonJioTVHeaders(req *fasthttp.Request, deviceID, crmID, uniqueID string) {
+func SetCommonJioTVHeaders(req *http.Request, deviceID, crmID, uniqueID string) {
 	req.Header.Set("appkey", "NzNiMDhlYzQyNjJm")
 	req.Header.Set("channel_id", "")
 	req.Header.Set("crmid", crmID)
@@ -154,18 +153,24 @@ func SetCommonJioTVHeaders(req *fasthttp.Request, deviceID, crmID, uniqueID stri
 	req.Header.Set("osVersion", "13")
 	req.Header.Set("subscriberId", crmID)
 	req.Header.Set("uniqueId", uniqueID)
-	req.Header.SetUserAgent(headers.UserAgentOkHttp)
+	req.Header.Set("User-Agent", headers.UserAgentOkHttp)
 	req.Header.Set("usergroup", "tvYR7NSNn7rymo3F")
 	req.Header.Set("versionCode", headers.VersionCode389)
 }
 
 // ParseJSONResponse parses JSON response body into the provided interface
-func ParseJSONResponse(resp *fasthttp.Response, target interface{}) error {
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return fmt.Errorf("request failed with status code: %d, body: %s", resp.StatusCode(), resp.Body())
+func ParseJSONResponse(resp *http.Response, target interface{}) error {
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("request failed with status code: %d, body: %s", resp.StatusCode, string(body))
 	}
 
-	if err := json.Unmarshal(resp.Body(), target); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if err := json.Unmarshal(body, target); err != nil {
 		return fmt.Errorf("failed to unmarshal JSON response: %w", err)
 	}
 

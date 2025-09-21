@@ -3,6 +3,8 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strconv"
 	"sync"
 	"time"
@@ -13,7 +15,6 @@ import (
 	internalUtils "github.com/jiotv-go/jiotv_go/v3/internal/utils"
 	"github.com/jiotv-go/jiotv_go/v3/pkg/television"
 	"github.com/jiotv-go/jiotv_go/v3/pkg/utils"
-	"github.com/valyala/fasthttp"
 )
 
 var (
@@ -192,7 +193,7 @@ func LoginRefreshAccessToken() error {
 		return err
 	}
 
-	// Prepare the request body
+	// Prepare the request body as JSON
 	requestBody := map[string]string{
 		"appName":      "RJIL_JioTV",
 		"deviceId":     utils.GetDeviceID(),
@@ -205,38 +206,42 @@ func LoginRefreshAccessToken() error {
 		return err
 	}
 
-	// Prepare the request
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
-	req.SetRequestURI(REFRESH_TOKEN_URL)
-	req.Header.SetMethod("POST")
-	req.Header.Set(headers.DeviceType, headers.DeviceTypePhone)
-	req.Header.Set(headers.VersionCode, headers.VersionCode389)
-	req.Header.Set(headers.OS, headers.OSAndroid)
-	req.Header.Set(headers.ContentType, headers.ContentTypeJSONCharsetUTF8)
-	req.Header.Set(headers.Host, urls.AuthMediaDomain)
-	req.Header.Set(headers.UserAgent, headers.UserAgentOkHttp)
-	req.Header.Set(headers.AccessToken, tokenData.AccessToken)
-	req.SetBody(requestBodyJSON)
-
-	// Send the request
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
+	// Make HTTP request using utility function
 	client := utils.GetRequestClient()
-	if err := client.Do(req, resp); err != nil {
+	resp, err := utils.MakeHTTPRequest(utils.HTTPRequestConfig{
+		URL:    REFRESH_TOKEN_URL,
+		Method: "POST",
+		Body:   requestBodyJSON,
+		Headers: map[string]string{
+			headers.DeviceType:   headers.DeviceTypePhone,
+			headers.VersionCode:  headers.VersionCode389,
+			headers.OS:           headers.OSAndroid,
+			headers.ContentType:  headers.ContentTypeJSONCharsetUTF8,
+			headers.Host:         urls.AuthMediaDomain,
+			headers.UserAgent:    headers.UserAgentOkHttp,
+			headers.AccessToken:  tokenData.AccessToken,
+		},
+	}, client)
+	if err != nil {
 		utils.Log.Printf("HTTP request failed for AccessToken refresh: %v", err)
 		return err
 	}
+	defer resp.Body.Close()
 
 	// Check the response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		err := fmt.Errorf("AccessToken refresh failed with status code: %d, body: %s", resp.StatusCode(), string(resp.Body()))
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		err := fmt.Errorf("AccessToken refresh failed with status code: %d, body: %s", resp.StatusCode, string(body))
 		utils.Log.Printf("Error: %v", err)
 		return err
 	}
 
 	// Parse the response body
-	respBody := resp.Body()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		utils.Log.Printf("Error reading AccessToken refresh response: %v", err)
+		return err
+	}
 
 	var response RefreshTokenResponse
 	if err := json.Unmarshal(respBody, &response); err != nil {
@@ -291,38 +296,42 @@ func LoginRefreshSSOToken() error {
 		return err
 	}
 
-	// Prepare the request
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
-	req.SetRequestURI(REFRESH_SSO_TOKEN_URL)
-	req.Header.SetMethod("GET")
-	req.Header.Set(headers.DeviceType, headers.DeviceTypePhone)
-	req.Header.Set(headers.VersionCode, headers.VersionCode389)
-	req.Header.Set(headers.OS, headers.OSAndroid)
-	req.Header.Set(headers.Host, urls.TVMediaDomain)
-	req.Header.Set(headers.UserAgent, headers.UserAgentOkHttp)
-	req.Header.Set("ssoToken", tokenData.SSOToken)
-	req.Header.Set("uniqueid", tokenData.UniqueID)
-	req.Header.Set("deviceid", deviceID)
-
-	// Send the request
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
+	// Make HTTP request using utility function
 	client := utils.GetRequestClient()
-	if err := client.Do(req, resp); err != nil {
+	resp, err := utils.MakeHTTPRequest(utils.HTTPRequestConfig{
+		URL:    REFRESH_SSO_TOKEN_URL,
+		Method: "GET",
+		Headers: map[string]string{
+			headers.DeviceType:  headers.DeviceTypePhone,
+			headers.VersionCode: headers.VersionCode389,
+			headers.OS:          headers.OSAndroid,
+			headers.Host:        urls.TVMediaDomain,
+			headers.UserAgent:   headers.UserAgentOkHttp,
+			"ssoToken":          tokenData.SSOToken,
+			"uniqueid":          tokenData.UniqueID,
+			"deviceid":          deviceID,
+		},
+	}, client)
+	if err != nil {
 		utils.Log.Printf("HTTP request failed for SSOToken refresh: %v", err)
 		return err
 	}
+	defer resp.Body.Close()
 
 	// Check the response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		err := fmt.Errorf("SSOToken refresh failed with status code: %d, body: %s", resp.StatusCode(), string(resp.Body()))
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		err := fmt.Errorf("SSOToken refresh failed with status code: %d, body: %s", resp.StatusCode, string(body))
 		utils.Log.Printf("Error: %v", err)
 		return err
 	}
 
 	// Parse the response body
-	respBody := resp.Body()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		utils.Log.Printf("Error reading SSOToken refresh response: %v", err)
+		return err
+	}
 
 	var response RefreshSSOTokenResponse
 	if err := json.Unmarshal(respBody, &response); err != nil {

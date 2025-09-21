@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -14,7 +15,6 @@ import (
 	internalUtils "github.com/jiotv-go/jiotv_go/v3/internal/utils"
 	"github.com/jiotv-go/jiotv_go/v3/pkg/secureurl"
 	"github.com/jiotv-go/jiotv_go/v3/pkg/utils"
-	"github.com/valyala/fasthttp"
 )
 
 // getDrmMpd returns required properties for rendering DRM MPD
@@ -136,25 +136,25 @@ func DRMKeyHandler(c *fiber.Ctx) error {
 
 	// Make a HEAD request to the decoded_channel to get the cookies
 	client := utils.GetRequestClient()
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
-
-	req.SetRequestURI(decoded_channel)
-	req.Header.SetMethod("HEAD")
-
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
-
-	// Perform the HTTP GET request
-	if err := client.Do(req, resp); err != nil {
+	req, err := http.NewRequest("HEAD", decoded_channel, nil)
+	if err != nil {
 		utils.Log.Panic(err)
+		return internalUtils.InternalServerError(c, err)
 	}
 
+	// Perform the HTTP HEAD request
+	resp, err := client.Do(req)
+	if err != nil {
+		utils.Log.Panic(err)
+		return internalUtils.InternalServerError(c, err)
+	}
+	defer resp.Body.Close()
+
 	// Get the cookies from the response
-	cookies := resp.Header.Peek("Set-Cookie")
+	cookies := resp.Header.Get("Set-Cookie")
 
 	// Set the cookies in the request
-	c.Request().Header.Set("Cookie", string(cookies))
+	c.Request().Header.Set("Cookie", cookies)
 
 	decoded_url, err := internalUtils.DecryptURLParam("auth", auth)
 	if err != nil {
@@ -187,7 +187,7 @@ func DRMKeyHandler(c *fiber.Ctx) error {
 	c.Request().Header.Del("Accept")
 	c.Request().Header.Del("Origin")
 
-	if err := proxy.Do(c, decoded_url, TV.Client); err != nil {
+	if err := proxy.Do(c, decoded_url); err != nil {
 		return err
 	}
 
@@ -227,7 +227,7 @@ func MpdHandler(c *fiber.Ctx) error {
 	c.Request().Header.Set("User-Agent", PLAYER_USER_AGENT)
 	// remove Accept-Encoding header
 	c.Request().Header.Del("Accept-Encoding")
-	if err := proxy.Do(c, requestUrl, TV.Client); err != nil {
+	if err := proxy.Do(c, requestUrl); err != nil {
 		return err
 	}
 	c.Response().Header.Del(fiber.HeaderServer)
@@ -294,7 +294,7 @@ func DashHandler(c *fiber.Ctx) error {
 
 	c.Request().Header.Set("User-Agent", PLAYER_USER_AGENT)
 
-	if err := proxy.Do(c, proxyUrl, TV.Client); err != nil {
+	if err := proxy.Do(c, proxyUrl); err != nil {
 		return err
 	}
 	c.Response().Header.Del(fiber.HeaderServer)

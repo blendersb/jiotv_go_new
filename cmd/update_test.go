@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -10,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/urfave/cli/v2"
-	"github.com/valyala/fasthttp"
 )
 
 func TestUpdate(t *testing.T) {
@@ -486,26 +486,23 @@ func getLatestReleaseWithBaseURL(customVersion, baseURL string) (*Release, error
 		url = fmt.Sprintf("%s/repos/%s/%s/releases/latest", baseURL, owner, repo)
 	}
 
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	req.SetRequestURI(url)
-	req.Header.SetMethod("GET")
-
-	if err := fasthttp.Do(req, resp); err != nil {
+	// Make HTTP request
+	resp, err := http.Get(url)
+	if err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
 
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, fmt.Errorf("failed to fetch latest release. Status code: %d", resp.StatusCode())
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch latest release. Status code: %d", resp.StatusCode)
 	}
 
-	body := resp.Body()
-	var release Release
-	err := json.Unmarshal(body, &release)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		return nil, err
+	}
+	var release Release
+	if err = json.Unmarshal(body, &release); err != nil {
 		return nil, err
 	}
 

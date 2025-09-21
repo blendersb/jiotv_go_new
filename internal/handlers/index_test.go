@@ -1,12 +1,12 @@
 package handlers
 
 import (
+	"net/http/httptest"
 	"testing"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jiotv-go/jiotv_go/v3/internal/config"
 	"github.com/jiotv-go/jiotv_go/v3/pkg/television"
-	"github.com/valyala/fasthttp"
 )
 
 // TestIndexHandlerActuallyCallsHandler verifies that we call the real IndexHandler function
@@ -75,13 +75,10 @@ func TestIndexHandlerActuallyCallsHandler(t *testing.T) {
 
 			// Create mock Fiber context
 			app := fiber.New()
-			ctx := &fasthttp.RequestCtx{}
-			ctx.Request.Header.SetMethod("GET")
-			ctx.Request.SetRequestURI("/")
-
-			// Add query parameters if any
+			
+			// Build URL with query parameters
+			url := "/"
 			if len(tc.queryParams) > 0 {
-				url := "/"
 				first := true
 				for key, value := range tc.queryParams {
 					if first {
@@ -92,10 +89,10 @@ func TestIndexHandlerActuallyCallsHandler(t *testing.T) {
 					}
 					url += key + "=" + value
 				}
-				ctx.Request.SetRequestURI(url)
 			}
 
-			fiberCtx := app.AcquireCtx(ctx)
+			req := httptest.NewRequest("GET", url, nil)
+			fiberCtx := app.AcquireCtx()
 			defer app.ReleaseCtx(fiberCtx)
 
 			// Call the ACTUAL IndexHandler directly (this is the key improvement)

@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"math/big"
+	"net/http"
 
 	"os"
 	"sync"
@@ -18,7 +20,6 @@ import (
 	"github.com/jiotv-go/jiotv_go/v3/pkg/scheduler"
 	"github.com/jiotv-go/jiotv_go/v3/pkg/utils"
 	"github.com/schollz/progressbar/v3"
-	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -125,7 +126,7 @@ func NewProgramme(channelID int, start, stop, title, desc, category, iconSrc str
 
 // genXML generates XML EPG from JioTV API and returns it as a byte slice.
 func genXML() ([]byte, error) {
-	// Create a reusable fasthttp client with common headers
+	// Create a reusable HTTP client with common headers
 	client := utils.GetRequestClient()
 
 	// Create channels and programmes slices with initial capacity
@@ -134,28 +135,36 @@ func genXML() ([]byte, error) {
 
 	// Define a worker function for fetching EPG data
 	fetchEPG := func(channel Channel, bar *progressbar.ProgressBar) {
-		req := fasthttp.AcquireRequest()
-		req.Header.SetUserAgent(headers.UserAgentOkHttp)
-		defer fasthttp.ReleaseRequest(req)
-
-		resp := fasthttp.AcquireResponse()
-
 		for offset := 0; offset < 2; offset++ {
 			reqUrl := fmt.Sprintf(EPG_URL, offset, channel.ID)
-			req.SetRequestURI(reqUrl)
+			
+			req, err := http.NewRequest("GET", reqUrl, nil)
+			if err != nil {
+				utils.Log.Printf("Error creating request for channel %d, offset %d: %v", channel.ID, offset, err)
+				continue
+			}
+			req.Header.Set("User-Agent", headers.UserAgentOkHttp)
 
-			if err := client.Do(req, resp); err != nil {
+			resp, err := client.Do(req)
+			if err != nil {
 				// Handle error
 				utils.Log.Printf("Error fetching EPG for channel %d, offset %d: %v", channel.ID, offset, err)
 				continue
 			}
 
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				utils.Log.Printf("Error reading response body for channel %d, offset %d: %v", channel.ID, offset, err)
+				continue
+			}
+
 			var epgResponse EPGResponse
-			if err := json.Unmarshal(resp.Body(), &epgResponse); err != nil {
+			if err := json.Unmarshal(body, &epgResponse); err != nil {
 				// Handle error
 				utils.Log.Printf("Error unmarshaling EPG response for channel %d, offset %d: %v", channel.ID, offset, err)
 				// Print response body for debugging
-				utils.Log.Printf("Response body: %s", resp.Body())
+				utils.Log.Printf("Response body: %s", string(body))
 				continue
 			}
 
@@ -166,7 +175,6 @@ func genXML() ([]byte, error) {
 			}
 		}
 		bar.Add(1)
-		fasthttp.ReleaseResponse(resp)
 	}
 
 	// Fetch channels data
@@ -178,7 +186,7 @@ func genXML() ([]byte, error) {
 	if err != nil {
 		return nil, utils.LogAndReturnError(err, "Failed to fetch channels")
 	}
-	defer fasthttp.ReleaseResponse(resp)
+	defer resp.Body.Close()
 
 	var channelsResponse ChannelsResponse
 	if err := utils.ParseJSONResponse(resp, &channelsResponse); err != nil {

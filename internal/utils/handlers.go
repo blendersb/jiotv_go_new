@@ -2,12 +2,12 @@ package utils
 
 import (
 	"fmt"
+	"net/http"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/proxy"
 	"github.com/jiotv-go/jiotv_go/v3/pkg/secureurl"
 	"github.com/jiotv-go/jiotv_go/v3/pkg/utils"
-	"github.com/valyala/fasthttp"
 )
 
 // ErrorResponse sends a standardized error response
@@ -69,12 +69,13 @@ func DecryptURLParam(paramName, encryptedURL string) (string, error) {
 }
 
 // ProxyRequest performs a proxy request with common setup
-func ProxyRequest(c *fiber.Ctx, url string, client *fasthttp.Client, userAgent string) error {
+func ProxyRequest(c *fiber.Ctx, url string, client *http.Client, userAgent string) error {
 	if userAgent != "" {
 		SetCommonHeaders(c, userAgent)
 	}
 	
-	if err := proxy.Do(c, url, client); err != nil {
+	// For fiber proxy with net/http client, we can use the default proxy without passing client
+	if err := proxy.Do(c, url); err != nil {
 		return err
 	}
 	

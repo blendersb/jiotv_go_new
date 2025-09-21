@@ -2,9 +2,8 @@ package television
 
 import (
 	"encoding/json"
+	"net/http"
 	"strconv"
-
-	"github.com/valyala/fasthttp"
 )
 
 // Television struct to store credentials and client required for making requests to JioTV API
@@ -14,7 +13,7 @@ type Television struct {
 	Crm         string
 	UniqueID    string
 	Headers     map[string]string
-	Client      *fasthttp.Client
+	Client      *http.Client
 }
 
 // Channel represents Individual channel details from JioTV API
